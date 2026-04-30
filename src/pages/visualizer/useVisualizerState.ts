@@ -9,11 +9,10 @@ import {
   type Landmark,
 } from "@/visualizer/landmarks";
 import {
-  parseUserMessage,
   applyDeltas,
   type ChatMessage,
-  type ParseResult,
 } from "@/visualizer/chatParser";
+import { chatToFeatures } from "@/visualizer/llmChatBridge";
 import {
   generateAIVisualization,
   buildTransformationPrompt,
@@ -423,13 +422,18 @@ export function useVisualizerState() {
         clearTimeout(typingTimeoutRef.current);
       }
 
-      typingTimeoutRef.current = setTimeout(() => {
+      typingTimeoutRef.current = setTimeout(async () => {
         typingTimeoutRef.current = null;
-        setShowTyping(false);
 
         if (landmarks) {
           const currentFV = featureValuesRef.current;
-          const result: ParseResult = parseUserMessage(text, currentFV, chatMessagesRef.current);
+          const result = await chatToFeatures(
+            text,
+            currentFV,
+            chatMessagesRef.current,
+            { aiModeEnabled: aiMode },
+          );
+          setShowTyping(false);
 
           const assistantMsg: ChatMessage = {
             id: `asst-${crypto.randomUUID()}`,
@@ -454,10 +458,14 @@ export function useVisualizerState() {
             pushHistory({ featureValues: newValues, message: text });
           }
 
-          if (aiMode && (result.type === "adjustment" || result.type === "unknown")) {
+          if (
+            (aiMode || result.shouldInvokeAiImage) &&
+            (result.type === "adjustment" || result.type === "unknown")
+          ) {
             handleAIGenerate(text);
           }
         } else {
+          setShowTyping(false);
           if (aiMode) {
             handleAIGenerate(text);
           } else {
