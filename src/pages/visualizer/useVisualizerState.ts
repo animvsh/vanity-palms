@@ -12,7 +12,11 @@ import {
   applyDeltas,
   type ChatMessage,
 } from "@/visualizer/chatParser";
-import { chatToFeatures } from "@/visualizer/llmChatBridge";
+import {
+  chatToFeatures,
+  type FaceOperationPlan,
+} from "@/visualizer/llmChatBridge";
+import { runFaceOperation } from "@/visualizer/faceOperation";
 import {
   generateAIVisualization,
   buildTransformationPrompt,
@@ -73,6 +77,15 @@ export function useVisualizerState() {
   const [aiResultUrl, setAiResultUrl] = useState<string | null>(null);
   const aiResultActive = useRef(false);
   const [aiStrength, setAiStrength] = useState(0.4);
+
+  // Face operation (FaceFusion) state
+  const [referenceFaceBase64, setReferenceFaceBase64] = useState<string | null>(
+    null,
+  );
+  const referenceFaceRef = useRef<string | null>(null);
+  referenceFaceRef.current = referenceFaceBase64;
+  const [pendingFaceOperation, setPendingFaceOperation] =
+    useState<FaceOperationPlan | null>(null);
 
   // UI state
   const [showBeforeAfter, setShowBeforeAfter] = useState(false);
@@ -381,6 +394,140 @@ export function useVisualizerState() {
     [sourceImage, aiStrength, aiGenerating],
   );
 
+  // ── FaceFusion operation ─────────────────────────────────
+
+  const handleFaceOperation = useCallback(
+    async (plan: FaceOperationPlan) => {
+      if (!sourceImage || aiGenerating) return;
+
+      // Swap requires a reference face. If we don't have one, stash the
+      // plan and ask the user to upload.
+      if (plan.type === "swap" && !referenceFaceRef.current) {
+        setPendingFaceOperation(plan);
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `asst-${crypto.randomUUID()}`,
+            role: "assistant",
+            content:
+              "To swap your face I need a reference photo of the person you want to look like. Use the \"Reference face\" button to upload one, then I'll run it.",
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      }
+
+      setAiGenerating(true);
+      const progressId = `face-progress-${crypto.randomUUID()}`;
+      const opLabel: Record<FaceOperationPlan["type"], string> = {
+        swap: "Swapping faces",
+        enhance: "Enhancing the photo",
+        age: "Aging the face",
+        expression: "Adjusting expression",
+      };
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: progressId,
+          role: "assistant",
+          content: `${opLabel[plan.type]} — this can take 10–60 seconds...`,
+          timestamp: Date.now(),
+        },
+      ]);
+
+      try {
+        const base64 = imageToBase64(sourceImage);
+        const result = await runFaceOperation({
+          ...plan,
+          imageBase64: base64,
+          targetBase64:
+            plan.type === "swap"
+              ? referenceFaceRef.current ?? undefined
+              : undefined,
+        });
+
+        setAiResultUrl(result.resultDataUrl);
+        aiResultActive.current = true;
+
+        const img = new Image();
+        img.onload = () => {
+          if (outputCanvasRef.current) {
+            const canvas = outputCanvasRef.current;
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            if (ctx) ctx.drawImage(img, 0, 0);
+          }
+        };
+        img.onerror = () => {
+          aiResultActive.current = false;
+        };
+        img.src = result.resultDataUrl;
+
+        setChatMessages((prev) => [
+          ...prev.filter((m) => m.id !== progressId),
+          {
+            id: `asst-${crypto.randomUUID()}`,
+            role: "assistant",
+            content: `Done in ${(result.durationMs / 1000).toFixed(1)}s. Use the compare button to see before & after.`,
+            timestamp: Date.now(),
+          },
+        ]);
+        setPendingFaceOperation(null);
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Face operation failed";
+        setChatMessages((prev) => [
+          ...prev.filter((m) => m.id !== progressId),
+          {
+            id: `asst-${crypto.randomUUID()}`,
+            role: "assistant",
+            content: `That face operation didn't run — ${message}.`,
+            timestamp: Date.now(),
+          },
+        ]);
+      } finally {
+        setAiGenerating(false);
+      }
+    },
+    [sourceImage, aiGenerating],
+  );
+
+  const handleReferenceFaceUpload = useCallback(
+    async (file: File) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        if (typeof dataUrl !== "string") return;
+        const base64 = dataUrl.includes(",")
+          ? dataUrl.split(",", 2)[1]
+          : dataUrl;
+        setReferenceFaceBase64(base64);
+        referenceFaceRef.current = base64;
+        // If we had a pending swap waiting on this, run it now.
+        if (pendingFaceOperation && pendingFaceOperation.type === "swap") {
+          const plan = pendingFaceOperation;
+          setPendingFaceOperation(null);
+          // Defer to next tick so state updates settle.
+          setTimeout(() => handleFaceOperation(plan), 0);
+        } else {
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: `asst-${crypto.randomUUID()}`,
+              role: "assistant",
+              content:
+                "Reference face saved. Say \"swap with this face\" any time and I'll apply it.",
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+      };
+      reader.readAsDataURL(file);
+    },
+    [handleFaceOperation, pendingFaceOperation],
+  );
+
   // ── Chat send ────────────────────────────────────────────
 
   const handleSendMessage = useCallback(
@@ -458,7 +605,10 @@ export function useVisualizerState() {
             pushHistory({ featureValues: newValues, message: text });
           }
 
-          if (
+          // FaceFusion operation takes priority over the AI-image / warp paths.
+          if (result.faceOperation) {
+            handleFaceOperation(result.faceOperation);
+          } else if (
             (aiMode || result.shouldInvokeAiImage) &&
             (result.type === "adjustment" || result.type === "unknown")
           ) {
@@ -482,7 +632,7 @@ export function useVisualizerState() {
         }
       }, 300);
     },
-    [showTyping, aiGenerating, landmarks, sourceImage, handleReset, aiMode, handleAIGenerate, pushHistory],
+    [showTyping, aiGenerating, landmarks, sourceImage, handleReset, aiMode, handleAIGenerate, handleFaceOperation, pushHistory],
   );
 
   // ── Download result ──────────────────────────────────────
@@ -669,6 +819,8 @@ export function useVisualizerState() {
     aiGenerating,
     aiResultUrl,
     aiStrength,
+    referenceFaceBase64,
+    pendingFaceOperation,
     showBeforeAfter,
     comparePosition,
     activeTab,
@@ -709,5 +861,7 @@ export function useVisualizerState() {
     handleNewPhoto,
     handleChatInputChange,
     handleWizardComplete,
+    handleReferenceFaceUpload,
+    handleFaceOperation,
   };
 }

@@ -214,6 +214,64 @@ describe("llmChatBridge", () => {
     expect(result.featureDeltas.lip_fullness).toBeGreaterThan(0);
   });
 
+  test("face_operation plan surfaces faceOperation field", async () => {
+    const invoker = vi.fn().mockResolvedValue({
+      data: {
+        intent: "face_operation",
+        featureDeltas: {},
+        explanation: "Aging you up by ~30 years.",
+        shouldInvokeAiImage: false,
+        faceOperation: { type: "age", direction: 60 },
+      },
+      error: null,
+    });
+
+    const result = await chatToFeatures(
+      "make me 60 years old",
+      createDefaultFeatureValues(),
+      baseHistory,
+      { invoker: invoker as unknown as never },
+    );
+
+    expect(result.source).toBe("llm");
+    expect(result.faceOperation).toEqual({ type: "age", direction: 60 });
+    expect(result.type).toBe("unknown");
+    expect(Object.keys(result.featureDeltas)).toHaveLength(0);
+  });
+
+  test("face_operation swap with needsTargetFace flag", async () => {
+    const invoker = vi.fn().mockResolvedValue({
+      data: {
+        intent: "face_operation",
+        featureDeltas: {},
+        explanation: "Upload a reference face to swap.",
+        shouldInvokeAiImage: false,
+        faceOperation: { type: "swap", needsTargetFace: true },
+      },
+      error: null,
+    });
+
+    const result = await chatToFeatures(
+      "swap my face with someone famous",
+      createDefaultFeatureValues(),
+      baseHistory,
+      { invoker: invoker as unknown as never },
+    );
+
+    expect(result.faceOperation?.type).toBe("swap");
+    expect(result.faceOperation?.needsTargetFace).toBe(true);
+  });
+
+  test("regex fallback never sets faceOperation", async () => {
+    const result = await chatToFeatures(
+      "fuller lips",
+      createDefaultFeatureValues(),
+      baseHistory,
+      { forceLocal: true },
+    );
+    expect(result.faceOperation).toBeUndefined();
+  });
+
   test("LLM clamps out-of-range deltas (server-side defense in depth)", async () => {
     // Even though the server clamps, ensure the client trusts the response
     // to be well-formed. If the server returned 0.55, we should pass it through.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -10,6 +10,8 @@ import {
   Wand2,
   Eye,
   EyeOff,
+  UserPlus,
+  Check,
 } from "lucide-react";
 import { useVisualizerState } from "../visualizer/useVisualizerState";
 import CanvasDisplay from "../visualizer/CanvasDisplay";
@@ -30,6 +32,7 @@ import { cn } from "@/lib/utils";
 export default function VisualizerAdminView() {
   const state = useVisualizerState();
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const refFaceInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="max-w-7xl animate-fade-up">
@@ -96,6 +99,31 @@ export default function VisualizerAdminView() {
                 <Download className="h-3.5 w-3.5" />
                 Download
               </Button>
+              <Button
+                size="sm"
+                variant={state.referenceFaceBase64 ? "default" : "outline"}
+                className="rounded-full gap-1.5"
+                onClick={() => refFaceInputRef.current?.click()}
+                title="Upload a reference face for swap operations"
+              >
+                {state.referenceFaceBase64 ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <UserPlus className="h-3.5 w-3.5" />
+                )}
+                {state.referenceFaceBase64 ? "Reference face set" : "Reference face"}
+              </Button>
+              <input
+                ref={refFaceInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) state.handleReferenceFaceUpload(file);
+                  e.target.value = "";
+                }}
+              />
               <Button
                 size="sm"
                 variant="ghost"

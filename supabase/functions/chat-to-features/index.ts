@@ -66,11 +66,29 @@ interface RequestBody {
   aiModeEnabled?: boolean;
 }
 
+type FaceOperationType = "swap" | "enhance" | "age" | "expression";
+
+interface FaceOperationPlan {
+  type: FaceOperationType;
+  /** age: -100..+100 (negative = younger) */
+  direction?: number;
+  /** enhance: gfpgan_1.4 | codeformer | gpen_bfr_512 */
+  model?: string;
+  /** enhance: 0..100 */
+  blend?: number;
+  /** expression: smile/laugh/frown/etc. */
+  expression?: string;
+  /** swap: when true, the client should prompt the user to upload a reference face. */
+  needsTargetFace?: boolean;
+}
+
 interface PlannerResponse {
-  intent: "adjustment" | "reset" | "undo" | "ai_generate" | "clarify";
+  intent: "adjustment" | "reset" | "undo" | "ai_generate" | "clarify" | "face_operation";
   featureDeltas: Partial<Record<FeatureId, number>>;
   explanation: string;
   shouldInvokeAiImage: boolean;
+  /** When intent === "face_operation" the client should call face-operation edge fn. */
+  faceOperation?: FaceOperationPlan;
 }
 
 const SYSTEM_PROMPT = `You are the chat-to-controls planner for a face visualization platform. The user is editing a face photo using natural language. Convert each user message into a JSON object that adjusts up to 16 face parameters.
@@ -121,12 +139,36 @@ Rules:
 - Only include features in featureDeltas that the user is changing. Omit unchanged features.
 - The "explanation" field is shown to the user — write it as a friendly one-line summary like "Lifted brows and softened the jawline."
 
+FaceFusion operations (set intent: "face_operation" and a faceOperation object):
+- Face SWAP: user wants to look like someone specific OR they uploaded a reference face. Use:
+    { "type": "swap", "needsTargetFace": <true if no reference uploaded yet, false otherwise> }
+  Examples that trigger swap: "swap my face with [name]", "make me look like a celebrity", "use my reference photo".
+- Face ENHANCE / restore: photo looks blurry, low-res, old, has artifacts. Use:
+    { "type": "enhance", "model": "gfpgan_1.4" | "codeformer", "blend": 50..100 }
+  Examples: "enhance this photo", "make it sharper", "restore the quality", "upscale it".
+- AGE modifier: explicit age request. Use:
+    { "type": "age", "direction": -100..+100 }   // negative = younger
+  Examples: "make me 60 years old" (direction +50..+70), "make me look 18" (direction -40..-50),
+            "5 years younger" (direction -8 to -15). Pure aging is a face_operation,
+            NOT a slider adjustment. Slider deltas are only for compounded effects ("look younger" implies
+            face_operation age + skin smoothness sliders).
+- EXPRESSION: change the face's expression. Use:
+    { "type": "expression", "expression": "smile" | "laugh" | "frown" | "surprised" | "sad" | "angry" | "neutral" }
+  Examples: "make me smile", "give me a serious expression", "look surprised".
+
+If a face_operation is selected:
+- Do NOT also output featureDeltas (leave it empty {}). The operation IS the change.
+- Set shouldInvokeAiImage = false (face_operation IS the AI step).
+- Set intent = "face_operation".
+- Always set faceOperation.needsTargetFace = true for swap unless user explicitly says "use the reference I uploaded" or similar.
+
 Return shape:
 {
-  "intent": "adjustment" | "reset" | "undo" | "ai_generate" | "clarify",
+  "intent": "adjustment" | "reset" | "undo" | "ai_generate" | "clarify" | "face_operation",
   "featureDeltas": { "<feature_id>": <number between -1 and 1>, ... },
   "explanation": "<one-line user-facing summary>",
-  "shouldInvokeAiImage": <boolean>
+  "shouldInvokeAiImage": <boolean>,
+  "faceOperation": <object as described above, or omitted>
 }`;
 
 function buildUserPrompt(body: RequestBody): string {
@@ -165,6 +207,56 @@ function clampDeltas(
   return result;
 }
 
+function normalizeFaceOperation(raw: unknown): FaceOperationPlan | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const type = String(obj.type ?? "").toLowerCase();
+  if (type !== "swap" && type !== "enhance" && type !== "age" && type !== "expression") {
+    return undefined;
+  }
+  const out: FaceOperationPlan = { type: type as FaceOperationType };
+
+  if (type === "age") {
+    const dir = Number(obj.direction);
+    if (Number.isFinite(dir)) {
+      out.direction = Math.max(-100, Math.min(100, Math.round(dir)));
+    } else {
+      out.direction = 0;
+    }
+  }
+  if (type === "enhance") {
+    const m = String(obj.model ?? "gfpgan_1.4");
+    out.model = ["gfpgan_1.4", "codeformer", "gpen_bfr_512"].includes(m)
+      ? m
+      : "gfpgan_1.4";
+    const b = Number(obj.blend);
+    out.blend = Number.isFinite(b) ? Math.max(0, Math.min(100, Math.round(b))) : 80;
+  }
+  if (type === "expression") {
+    const e = String(obj.expression ?? "smile");
+    out.expression = [
+      "neutral",
+      "smile",
+      "laugh",
+      "frown",
+      "surprised",
+      "sad",
+      "angry",
+    ].includes(e)
+      ? e
+      : "smile";
+  }
+  if (type === "swap") {
+    out.needsTargetFace =
+      typeof obj.needsTargetFace === "boolean"
+        ? obj.needsTargetFace
+        : typeof obj.needs_target_face === "boolean"
+          ? obj.needs_target_face
+          : true;
+  }
+  return out;
+}
+
 function normalizePlan(parsed: unknown): PlannerResponse {
   const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<
     string,
@@ -178,7 +270,8 @@ function normalizePlan(parsed: unknown): PlannerResponse {
       raw === "reset" ||
       raw === "undo" ||
       raw === "ai_generate" ||
-      raw === "clarify"
+      raw === "clarify" ||
+      raw === "face_operation"
     ) {
       return raw;
     }
@@ -200,11 +293,16 @@ function normalizePlan(parsed: unknown): PlannerResponse {
     obj.shouldInvokeAiImage ?? obj.should_invoke_ai_image,
   );
 
+  const faceOperation = normalizeFaceOperation(
+    obj.faceOperation ?? obj.face_operation,
+  );
+
   return {
     intent: intent as PlannerResponse["intent"],
     featureDeltas,
     explanation,
     shouldInvokeAiImage,
+    faceOperation,
   };
 }
 

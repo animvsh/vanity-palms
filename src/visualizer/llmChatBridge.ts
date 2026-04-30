@@ -30,11 +30,29 @@ export interface LLMBridgeOptions {
   timeoutMs?: number;
 }
 
+export type FaceOperationType = "swap" | "enhance" | "age" | "expression";
+
+export interface FaceOperationPlan {
+  type: FaceOperationType;
+  direction?: number;
+  model?: string;
+  blend?: number;
+  expression?: string;
+  needsTargetFace?: boolean;
+}
+
 interface LLMPlan {
-  intent: "adjustment" | "reset" | "undo" | "ai_generate" | "clarify";
+  intent:
+    | "adjustment"
+    | "reset"
+    | "undo"
+    | "ai_generate"
+    | "clarify"
+    | "face_operation";
   featureDeltas: Partial<FeatureValues>;
   explanation: string;
   shouldInvokeAiImage: boolean;
+  faceOperation?: FaceOperationPlan;
   provider?: string;
   model?: string;
 }
@@ -43,10 +61,19 @@ const DEFAULT_TIMEOUT_MS = 12_000;
 
 function planToParseResult(
   plan: LLMPlan,
-  text: string,
+  _text: string,
   currentValues: FeatureValues,
   history: ChatMessage[],
 ): ParseResult {
+  if (plan.intent === "face_operation") {
+    // Treat as unknown for the warp pipeline; the caller handles
+    // the actual face-operation invocation via shouldInvokeAiImage flow.
+    return {
+      type: "unknown",
+      featureDeltas: {},
+      responseText: plan.explanation || "Running that face operation now.",
+    };
+  }
   if (plan.intent === "reset") {
     // Build deltas that zero out current non-zero features so the same
     // applyDeltas pipeline can render the result.
@@ -128,6 +155,8 @@ export interface BridgeResult extends ParseResult {
   source: "llm" | "regex";
   /** True when the planner explicitly asked for the AI image pipeline. */
   shouldInvokeAiImage: boolean;
+  /** Set when the planner picked a FaceFusion operation. */
+  faceOperation?: FaceOperationPlan;
 }
 
 export async function chatToFeatures(
@@ -144,6 +173,7 @@ export async function chatToFeatures(
       ...local,
       source: "regex",
       shouldInvokeAiImage: false,
+      faceOperation: undefined,
     };
   };
 
@@ -184,6 +214,8 @@ export async function chatToFeatures(
       ...result,
       source: "llm",
       shouldInvokeAiImage: Boolean(plan.shouldInvokeAiImage),
+      faceOperation:
+        plan.intent === "face_operation" ? plan.faceOperation : undefined,
     };
   } catch {
     return fallback();
