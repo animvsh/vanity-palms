@@ -7,8 +7,9 @@ import type { ReactNode } from "react";
 import {
   Gauge, Users, Flag, CreditCard, ListChecks, Lock, LogOut,
   UserCheck, Crown, BarChart3, X, Check, Search, Star, Trash2,
-  Loader2, UserPlus, Copy,
+  Loader2, UserPlus, Copy, Sparkles,
 } from "lucide-react";
+import VisualizerAdminView from "./VisualizerAdminView";
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,7 @@ import {
 import type { Review } from "@/data/mockData";
 import { toast } from "@/hooks/use-toast";
 
-type Tab = "overview" | "providers" | "content" | "subscriptions" | "whitelist";
+type Tab = "overview" | "providers" | "content" | "subscriptions" | "whitelist" | "visualizer";
 
 type AdminProvider = Awaited<ReturnType<typeof fetchAdminProviders>>[number];
 
@@ -55,6 +56,7 @@ const AdminConsole = () => {
     { icon: <Flag className="h-4 w-4" />, label: "Content", value: "content" },
     { icon: <CreditCard className="h-4 w-4" />, label: "Subscriptions", value: "subscriptions" },
     { icon: <ListChecks className="h-4 w-4" />, label: "Whitelist", value: "whitelist" },
+    { icon: <Sparkles className="h-4 w-4" />, label: "Visualizer", value: "visualizer" },
   ];
 
   useEffect(() => {
@@ -174,6 +176,7 @@ const AdminConsole = () => {
         {activeTab === "content" && <ContentView />}
         {activeTab === "subscriptions" && <SubscriptionsView providers={providers} loading={providersLoading} setProviders={setProviders} />}
         {activeTab === "whitelist" && <WhitelistView />}
+        {activeTab === "visualizer" && <VisualizerAdminView />}
       </main>
     </div>
   );

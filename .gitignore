@@ -19,6 +19,17 @@ dist-ssr
 .omx/
 .wrangler/
 
+# Test runner output
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Python build artifacts (services/facefusion runs locally during dev)
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

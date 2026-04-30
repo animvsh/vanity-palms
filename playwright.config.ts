@@ -1,11 +1,21 @@
 import { defineConfig } from "@playwright/test";
 
+const localChrome = process.env.PLAYWRIGHT_LOCAL_CHROME;
+
 export default defineConfig({
   testDir: "./playwright",
   timeout: 60_000,
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",
+    ...(localChrome
+      ? {
+          launchOptions: {
+            executablePath: localChrome,
+            args: ["--no-sandbox", "--disable-dev-shm-usage"],
+          },
+        }
+      : {}),
   },
   webServer: {
     command: "npm run preview -- --host 127.0.0.1 --port 4173",
